@@ -2,7 +2,12 @@ package xyz.cereshost.vesta.core.market;
 
 import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import xyz.cereshost.vesta.core.trading.real.api.BinanceApi;
+
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 
 public class SymbolConfigurable implements Symbol{
 
@@ -18,6 +23,9 @@ public class SymbolConfigurable implements Symbol{
     @NotNull @Getter private MarketStatus marketStatus;
     @NotNull @Getter private String baseAsset = "?";
     @NotNull @Getter private String quoteAsset = "?";
+    @NotNull @Getter private Set<String> permissions = new HashSet<>();
+
+    @Nullable private Double stepSize;
 
     public SymbolConfigurable(@NotNull String symbol) {
         this.symbol = symbol;
@@ -40,7 +48,9 @@ public class SymbolConfigurable implements Symbol{
                               @NotNull MarketStatus marketStatus,
                               @NotNull String baseAsset,
                               @NotNull String quoteAsset,
-                              @NotNull Boolean spotTradingAllowed
+                              @NotNull Boolean spotTradingAllowed,
+                              @Nullable Double stepSize,
+                              @NotNull Set<String> permissions
     ) {
         this.symbol = symbol;
         this.shouldFuture = isFuture;
@@ -53,6 +63,8 @@ public class SymbolConfigurable implements Symbol{
         this.marketStatus = marketStatus;
         this.baseAsset = baseAsset;
         this.quoteAsset = quoteAsset;
+        this.stepSize = stepSize;
+        this.permissions = permissions;
     }
 
     @Override
@@ -70,6 +82,11 @@ public class SymbolConfigurable implements Symbol{
         return quoteAsset.equals("USDC");
     }
 
+    @Override
+    public @NotNull Optional<Double> getStepSize() {
+        return Optional.ofNullable(stepSize);
+    }
+
     private boolean isConfigured = false;
 
     @Override
@@ -85,6 +102,8 @@ public class SymbolConfigurable implements Symbol{
         marketStatus = symbolConfigurable.getMarketStatus();
         baseAsset = symbolConfigurable.getBaseAsset();
         quoteAsset = symbolConfigurable.getQuoteAsset();
+        stepSize = symbolConfigurable.getStepSize().orElse(null);
+        permissions = symbolConfigurable.getPermissions();
     }
 
 

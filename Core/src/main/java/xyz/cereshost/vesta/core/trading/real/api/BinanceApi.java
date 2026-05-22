@@ -13,6 +13,7 @@ import xyz.cereshost.vesta.core.trading.real.api.model.*;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
@@ -41,24 +42,26 @@ public interface BinanceApi extends Notifiable {
         return placeAlgoOrder(symbol, side, type, timeInForce, quantityLeverageCoin, trigger, true, type.isAllowClosePosition());
     }
 
-    Long placeOrder(@NotNull Symbol symbol,
+    OrderResult placeOrder(@NotNull Symbol symbol,
                     @NotNull DireccionOperation side,
                     @NotNull TypeOrder type,
                     @Nullable TimeInForce timeInForce,
                     @NotNull Double quantityLeverageCoin,
                     @Nullable Double trigger,
                     @NotNull Boolean reduceOnly,
-                    @NotNull Boolean closePosition
+                    @NotNull Boolean closePosition,
+                    @NotNull Boolean useQuantity
     );
 
-    default Long placeOrder(@NotNull Symbol symbol,
+    default OrderResult placeOrder(@NotNull Symbol symbol,
                             @NotNull DireccionOperation side,
                             @NotNull TypeOrder type,
                             @Nullable TimeInForce timeInForce,
                             @NotNull Double quantityLeverageCoin,
-                            @Nullable Double trigger
+                            @Nullable Double trigger,
+                            @NotNull Boolean useQuantity
     ){
-        return placeOrder(symbol, side, type, timeInForce, quantityLeverageCoin, trigger, true, type.isAllowClosePosition());
+        return placeOrder(symbol, side, type, timeInForce, quantityLeverageCoin, trigger, true, type.isAllowClosePosition(), useQuantity);
     }
 
     void cancelOrder(@NotNull Symbol symbol, @NotNull Long orderId, @NotNull Boolean isAlgoOrder);
@@ -66,6 +69,8 @@ public interface BinanceApi extends Notifiable {
     void closeAll(@NotNull Symbol symbol);
 
     void changeLeverage(@NotNull Symbol symbol, @NotNull Integer leverage);
+
+    void checkApikey();
 
     void invalidedCache();
 
@@ -103,7 +108,11 @@ public interface BinanceApi extends Notifiable {
     default String buildQueryString(@NotNull Map<String, String> params) {
         StringJoiner sj = new StringJoiner("&");
         for (Map.Entry<String, String> entry : params.entrySet()) {
-            sj.add(entry.getKey() + "=" + entry.getValue());
+            sj.add(
+                    URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8)
+                            + "="
+                            + URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8)
+            );
         }
         return sj.toString();
     }

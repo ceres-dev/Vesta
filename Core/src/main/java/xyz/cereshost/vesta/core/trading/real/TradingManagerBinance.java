@@ -55,8 +55,8 @@ public class TradingManagerBinance implements TradingManager {
                     quantity,
                     currentPrice,
                     false,
-                    false
-            );
+                    false,
+                    true).orderId();
             BinanceOpenPosition op = new BinanceOpenPosition(
                     this,
                     orderId,
@@ -96,8 +96,8 @@ public class TradingManagerBinance implements TradingManager {
                     quantityLeverageCoin.get(),
                     trigger,
                     false,
-                    false
-            );
+                    false,
+                    true).orderId();
             BinanceOrderSimple op = new BinanceOrderSimple(
                     this,
                     orderId,
@@ -175,8 +175,8 @@ public class TradingManagerBinance implements TradingManager {
                 quantityLeverageCoin,
                 null,
                 true,
-                false
-        );
+                false,
+                true);
 
         BinanceClosePosition closeOp = new BinanceClosePosition(
                 binanceApi.getTickerPrice(symbol),
@@ -492,8 +492,8 @@ public class TradingManagerBinance implements TradingManager {
                     quantity,
                     triggerPrice,
                     true,
-                    typeOrder.isAllowClosePosition()
-            );
+                    typeOrder.isAllowClosePosition(),
+                    true).orderId();
             super.setTriggerPrice(triggerPrice);
         }
 
@@ -508,8 +508,8 @@ public class TradingManagerBinance implements TradingManager {
                     quantity,
                     triggerPrice,
                     true,
-                    typeOrder.isAllowClosePosition()
-            );
+                    typeOrder.isAllowClosePosition(),
+                    true).orderId();
             this.timeInForce = timeInForce;
         }
 
@@ -524,8 +524,8 @@ public class TradingManagerBinance implements TradingManager {
                     quantity,
                     triggerPrice,
                     true,
-                    typeOrder.isAllowClosePosition()
-            );
+                    typeOrder.isAllowClosePosition(),
+                    true).orderId();
             this.typeOrder = typeOrder;
         }
 

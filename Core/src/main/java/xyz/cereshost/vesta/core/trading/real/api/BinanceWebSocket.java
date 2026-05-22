@@ -15,8 +15,6 @@ import xyz.cereshost.vesta.core.trading.TimeInForce;
 import xyz.cereshost.vesta.core.trading.TypeOrder;
 import xyz.cereshost.vesta.core.trading.real.api.model.*;
 
-import java.io.IOException;
-import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.util.List;
 import java.util.Map;
@@ -24,9 +22,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
-import java.util.function.Function;
 
 public abstract class BinanceWebSocket extends BaseConnector implements BinanceApi {
 
@@ -76,7 +72,7 @@ public abstract class BinanceWebSocket extends BaseConnector implements BinanceA
     }
 
     @Override
-    public Long placeOrder(@NotNull Symbol symbol, @NotNull DireccionOperation side, @NotNull TypeOrder type, @Nullable TimeInForce timeInForce, @NotNull Double quantityLeverageCoin, @Nullable Double trigger, @NotNull Boolean reduceOnly, @NotNull Boolean closePosition) {
+    public OrderResult placeOrder(@NotNull Symbol symbol, @NotNull DireccionOperation side, @NotNull TypeOrder type, @Nullable TimeInForce timeInForce, @NotNull Double quantityLeverageCoin, @Nullable Double trigger, @NotNull Boolean reduceOnly, @NotNull Boolean closePosition, @NotNull Boolean useQuantity) {
         throw new UnsupportedOperationException("Not supported yet.");
     }
 

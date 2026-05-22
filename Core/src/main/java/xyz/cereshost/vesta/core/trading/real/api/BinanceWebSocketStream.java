@@ -217,6 +217,11 @@ public final class BinanceWebSocketStream extends BinanceWebSocket {
     }
 
     @Override
+    public void checkApikey() {
+
+    }
+
+    @Override
     public @NotNull HashMap<String, Double> getBalance(@NotNull Boolean isFuture) {
         throw new UnsupportedOperationException();
     }

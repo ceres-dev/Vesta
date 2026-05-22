@@ -38,6 +38,11 @@ public final class BinanceWebSocketRequest extends BinanceWebSocket {
                 .join();
     }
 
+    @Override
+    public void checkApikey() {
+
+    }
+
     public void invalidedCache() {
         exchangeInfoSpot = null;
     }

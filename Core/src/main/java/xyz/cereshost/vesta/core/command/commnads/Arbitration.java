@@ -14,6 +14,7 @@ import xyz.cereshost.vesta.core.trading.TypeOrder;
 import xyz.cereshost.vesta.core.trading.abitrage.TriangularArbitrage;
 import xyz.cereshost.vesta.core.trading.real.api.BinanceApiRest;
 import xyz.cereshost.vesta.core.trading.real.api.BinanceWebSocketFull;
+import xyz.cereshost.vesta.core.trading.real.api.model.OrderResult;
 import xyz.cereshost.vesta.core.utils.LoaderIndicator;
 
 import java.util.*;
@@ -32,12 +33,13 @@ public class Arbitration extends BaseCommand {
 
     @Override
     public void execute(Arguments arguments) throws Exception {
-        BinanceWebSocketFull apiWebSocket = new BinanceWebSocketFull(false);
+        boolean isTestNet = false;
+        BinanceWebSocketFull apiWebSocket = new BinanceWebSocketFull(isTestNet);
 
         LoaderIndicator loaderIndicator = new LoaderIndicator(10);
         loaderIndicator.setLabel("Buscado Arbitrajes...");
 
-        BinanceApiRest apiRest = new BinanceApiRest(true, true);
+        BinanceApiRest apiRest = new BinanceApiRest(isTestNet, true);
 
         MediaNotification mediaNotification = new DiscordNotification();
 
@@ -47,6 +49,11 @@ public class Arbitration extends BaseCommand {
         AtomicLong windowStart = new AtomicLong(0L);
         ExecutorArbitrage executorArbitrage = new ExecutorArbitrage(Main.EXECUTOR, apiRest, mediaNotification);
         AtomicLong counterDecent = new AtomicLong(0L);
+        apiRest.checkApikey();
+        for (Map.Entry<String, Double> entry : apiRest.getBalance(false).entrySet()) {
+            if (entry.getValue() == 0) continue;
+            Vesta.info(entry.getKey() + ": " + entry.getValue());
+        }
 
         TriangularArbitrage triangularArbitrage = new TriangularArbitrage(apiWebSocket, opportunities -> {
             updateLoader(loaderIndicator, counterDecent);
@@ -60,8 +67,6 @@ public class Arbitration extends BaseCommand {
             if (!changed) {
                 return;
             }
-
-//            long duration = currentTime - windowStart.get();
             if (current.isEmpty() && !opportunityWindows.isEmpty()) {
                 loaderIndicator.clearLine();
                 ArrayList<TriangularArbitrage.TriangularArbitrageOpportunity> arrayOpportunity = new ArrayList<>(opportunityWindows);
@@ -94,7 +99,6 @@ public class Arbitration extends BaseCommand {
                     }
                 }
                 executorArbitrage.onClose();
-//                Vesta.info("Fin de ventana de arbitraje (%d ms)", duration);
                 windowStart.set(-1);
             }
 
@@ -118,6 +122,7 @@ public class Arbitration extends BaseCommand {
             executorArbitrage.onTick(List.of());
             triangularArbitrage.stopSearch();
             triangularArbitrage.startSearch(Main.EXECUTOR);
+            Vesta.info("Reiniciando cache");
         }, 2, 2, TimeUnit.HOURS);
     }
 
@@ -131,7 +136,7 @@ public class Arbitration extends BaseCommand {
         deltasProcessing.offer(time - startProcessing.get());
         startProcessing.set(time);
         double avgProcessing = deltasProcessing.stream().mapToLong(Long::longValue).average().getAsDouble();
-        loaderIndicator.setLabel("%dms (%.2fu/s) %d Buscando posibles arbitrajes...".formatted((int) avgProcessing, 1000 / avgProcessing, counter.get()));
+        loaderIndicator.setLabel("%dms (%.2fu/s) Arbitraje detectados: %d. Buscando arbitrajes...".formatted((int) avgProcessing, 1000 / avgProcessing, counter.get()));
         loaderIndicator.printAndNexStep();
     }
 
@@ -192,7 +197,7 @@ public class Arbitration extends BaseCommand {
                             TriangularArbitrage.ArbitrageEdge USDT = null;
 
                             for (TriangularArbitrage.ArbitrageEdge edge : opportunity.edges()) {
-                                if (Objects.equals(edge.fromAsset().asset, "USDT")){
+                                if (edge.fromAsset().asset.equals("USDT")){
                                     USDT = edge;
                                     break;
                                 }
@@ -203,14 +208,26 @@ public class Arbitration extends BaseCommand {
                                 return;
                             }
                             int index = opportunity.edges().indexOf(USDT);
+                            List<TriangularArbitrage.ArbitrageEdge> rotatedEdges = new ArrayList<>(opportunity.edges());
                             if (index != -1) {
-                                Collections.rotate(opportunity.edges(), -index);
+                                Collections.rotate(rotatedEdges, -index);
                             }
-                            Vesta.info(b.assetsCycle() +" == " + opportunity.assetsCycle());
-                            this.opportunity = b;
+                            List<String> rotatedAssets = new ArrayList<>(rotatedEdges.size() + 1);
+                            if (!rotatedEdges.isEmpty()) {
+                                rotatedAssets.add(rotatedEdges.getFirst().fromAsset().asset);
+                                for (TriangularArbitrage.ArbitrageEdge edge : rotatedEdges) {
+                                    rotatedAssets.add(edge.toAsset().asset);
+                                }
+                            }
+                            this.opportunity = new TriangularArbitrage.TriangularArbitrageOpportunity(
+                                    List.copyOf(rotatedAssets),
+                                    List.copyOf(rotatedEdges),
+                                    opportunity.lifeTime(),
+                                    opportunity.rateProduct(),
+                                    opportunity.profitPercent(),
+                                    opportunity.totalWeight()
+                            );
                             break;
-                        }else {
-                            Vesta.info(b.assetsCycle() +" != " + opportunity.assetsCycle());
                         }
                     }
                 }, 200, TimeUnit.MILLISECONDS);
@@ -222,49 +239,60 @@ public class Arbitration extends BaseCommand {
             this.opportunity = null;
         }
 
-        private volatile CompletableFuture<Object> runLoop = CompletableFuture.completedFuture(null);
+        private volatile CompletableFuture<Object> runLoop = CompletableFuture.completedFuture(new Object());
 
         public synchronized void tryRunLoop() {
-//            if (opportunity != null) {
-//                Vesta.info("OPP: " +true);
-//            }
-            if (runLoop.isDone()) {
+            if (runLoop.isDone() && opportunity != null) {
                 runLoop = CompletableFuture.supplyAsync(() -> {
-                    while (opportunity != null) {
-                        Vesta.clearLine();
-                        List<TriangularArbitrage.ArbitrageEdge> edges = new ArrayList<>(opportunity.edges());
-
-                        Vesta.info("Iniciando bucle con: " + edges.stream().map(TriangularArbitrage.ArbitrageEdge::symbol).toList().toString());
-                        boolean isFirst = true;
-                        for (TriangularArbitrage.ArbitrageEdge edge : edges) {
-                            Double balance;
-                            if (isFirst) {
-                                isFirst = false;
-                                balance = 5d;
-                            }else {
-                                System.out.println(edge.fromAsset().asset);
-                                balance = binanceApi.getBalance(false).get(edge.fromAsset().asset);
-                            }
-                            binanceApi.placeOrder(
-                                    symbolsByName.get(edge.symbol()),
-                                    DireccionOperation.parse(edge.action()),
-                                    TypeOrder.MARKET,
-                                    null,
-                                    balance,
-                                    null,
-                                    false,
-                                    false
-                            );
-//                            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(250));
+                    try {
+                        while (opportunity != null) {
                             Vesta.clearLine();
-                            Vesta.info("Ejecutando: %s %s", edge.symbol(), edge.action());
-                        }
+                            if (opportunity == null) {
+                                return new Object();
+                            }
+                            List<TriangularArbitrage.ArbitrageEdge> edges = new ArrayList<>(opportunity.edges());
+
+                            Vesta.info("Iniciando bucle con: " + edges.stream().map(TriangularArbitrage.ArbitrageEdge::symbol).toList());
+
+                            double balance = TriangularArbitrage.DEFAULT_START_AMOUNT;
+                            for (TriangularArbitrage.ArbitrageEdge edge : edges) {
+                                Vesta.clearLine();
+                                Vesta.info("Ejecutando: %s %s", edge.symbol(), edge.action());
+                                SymbolConfigurable symbol = symbolsByName.get(edge.symbol());
+                                if (symbol == null) {
+                                    Vesta.warning("Símbolo no soportado en este entorno: " + edge.symbol());
+                                    continue;
+                                }
+                                Vesta.info("Balance: " + balance + " " + edge.fromAsset().asset);
+                                DireccionOperation direccion = DireccionOperation.parse(edge.action());
+                                OrderResult orderResult = binanceApi.placeOrder(
+                                        symbol,
+                                        direccion,
+                                        TypeOrder.MARKET,
+                                        null,
+                                        balance,
+                                        null,
+                                        direccion.isShort()
+                                );
+                                balance = orderResult.receivedQty();
+                                if (edge.toAsset().asset.equals("BNB")) {
+                                    balance = Math.max(0.0006, balance - 0.0006);
+                                }
+                                if (!Double.isFinite(balance) || balance <= 0.0) {
+                                    throw new IllegalStateException("La orden " + orderResult.orderId() + " no retorno cantidad recibida valida");
+                                }
+
+//                                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(250));
+                            }
 //                        mediaNotification.info("Arbitrage %s (Teórico) en **%s**",
 //                                opportunity != null ? "Ganado" : "Perdido",
 //                                String.join(" -> ", opportunity.assetsCycle())
 //                        );
-                        Vesta.clearLine();
-                        Vesta.info("Ciclo Completado: " + (opportunity != null ? "Ganado" : "Perdido"));
+                            Vesta.clearLine();
+                            Vesta.info("Ciclo Completado: " + (opportunity != null ? "Ganado" : "Perdido"));
+                        }
+                    }catch (Exception e){
+                        Vesta.sendWaringException("Error al ejecutar el bucle", e);
                     }
                     return new Object();
                 });
@@ -273,6 +301,15 @@ public class Arbitration extends BaseCommand {
 
         private boolean checkOpportunity(TriangularArbitrage.TriangularArbitrageOpportunity opportunity) {
             for (TriangularArbitrage.ArbitrageEdge edge : opportunity.edges()) {
+                if (edge.fromAsset().asset.equals("BTC") || edge.toAsset().asset.equals("BTC")){
+                    return false;
+                }
+                if (edge.fromAsset().asset.equals("BNB") || edge.toAsset().asset.equals("BNB")){
+                    return false;
+                }
+                if (edge.fromAsset().asset.equals("ETH") || edge.toAsset().asset.equals("ETH")){
+                    return false;
+                }
                 if (edge.fromAsset().asset.equals("USDT")) {
                     return true;
                 }

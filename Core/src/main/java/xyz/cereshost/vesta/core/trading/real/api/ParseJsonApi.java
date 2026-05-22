@@ -28,6 +28,19 @@ public class ParseJsonApi {
 //            while (iterator.hasNext()) {
 //                System.out.println(iterator.next());
 //            }
+
+            Double step = null;
+            for (JsonNode filters : info.get("filters")) {
+                if (filters.get("filterType").asText().equals("LOT_SIZE")) {
+                    step = Double.parseDouble(filters.get("stepSize").asText());
+                }
+            }
+
+            Set<String> permission = new HashSet<>();
+            for (JsonNode permissions : info.get("permissionSets").iterator().next()) {
+                permission.add(permissions.asText());
+            }
+
             symbols.add(
                     isFuture ?
                             new SymbolConfigurable(
@@ -40,7 +53,9 @@ public class ParseJsonApi {
                                     MarketStatus.valueOf(info.get("status").asText()),
                                     info.get("baseAsset").asText(),
                                     info.get("quoteAsset").asText(),
-                                    Objects.equals(info.get("status").asText(), "TRADING")
+                                    Objects.equals(info.get("status").asText(), "TRADING"),
+                                    step,
+                                    Set.of()
                             ) :
                             new SymbolConfigurable(
                                     symbol,
@@ -52,7 +67,9 @@ public class ParseJsonApi {
                                     MarketStatus.valueOf(info.get("status").asText()),
                                     info.get("baseAsset").asText(),
                                     info.get("quoteAsset").asText(),
-                                    info.get("isSpotTradingAllowed").booleanValue()
+                                    info.get("isSpotTradingAllowed").booleanValue(),
+                                    step,
+                                    permission
                             )
             );
         }
@@ -121,7 +138,7 @@ public class ParseJsonApi {
             }
         }else {
             for (JsonNode root : node.get("balances")){
-                balances.put(root.get("asset").asText(), root.get("balance").asDouble());
+                balances.put(root.get("asset").asText(), root.get("free").asDouble());
             }
         }
         return balances;

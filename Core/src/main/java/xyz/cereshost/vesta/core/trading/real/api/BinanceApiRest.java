@@ -8,22 +8,20 @@ import lombok.SneakyThrows;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import xyz.cereshost.vesta.common.Vesta;
-import xyz.cereshost.vesta.core.market.Symbol;
 import xyz.cereshost.vesta.core.exception.BinanceApiRequestException;
 import xyz.cereshost.vesta.core.exception.BinanceApiSignedRequestException;
 import xyz.cereshost.vesta.core.exception.BinanceCodeException;
 import xyz.cereshost.vesta.core.exception.BinanceCodeWeakException;
-import xyz.cereshost.vesta.core.io.IOdata;
+import xyz.cereshost.vesta.core.market.DireccionOperation;
+import xyz.cereshost.vesta.core.market.Symbol;
 import xyz.cereshost.vesta.core.market.SymbolConfigurable;
 import xyz.cereshost.vesta.core.message.MediaNotification;
-import xyz.cereshost.vesta.core.market.DireccionOperation;
 import xyz.cereshost.vesta.core.trading.Endpoints;
 import xyz.cereshost.vesta.core.trading.TimeInForce;
 import xyz.cereshost.vesta.core.trading.TypeOrder;
 import xyz.cereshost.vesta.core.trading.real.api.model.*;
 import xyz.cereshost.vesta.core.utils.LoaderIndicator;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -47,15 +45,9 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     @NotNull private MediaNotification mediaNotification = MediaNotification.empty();
     @NotNull private Consumer<Exception> exceptionHandler = e -> {};
 
-    public BinanceApiRest(boolean isTestNet, boolean useBest) throws IOException {
+    public BinanceApiRest(boolean isTestNet, boolean useBest) {
         super(Endpoints.FAPI);
 
-        this.futureBaseUrl = isTestNet ? Endpoints.DEMO_FAPI : Endpoints.FAPI;
-        this.spotBaseUrl = isTestNet ? Endpoints.TESTNET : useBest ? getBestEndpoint() : Endpoints.API;
-    }
-
-    public BinanceApiRest(String apiKey, String secretKey, boolean isTestNet, boolean useBest) {
-        super(Endpoints.API1);
         this.futureBaseUrl = isTestNet ? Endpoints.DEMO_FAPI : Endpoints.FAPI;
         this.spotBaseUrl = isTestNet ? Endpoints.TESTNET : useBest ? getBestEndpoint() : Endpoints.API;
     }
@@ -104,14 +96,15 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
 
 
     @Override
-    public Long placeOrder(@NotNull Symbol symbol,
-                           @NotNull DireccionOperation side,
-                           @NotNull TypeOrder type,
-                           @Nullable TimeInForce timeInForce,
-                           @NotNull Double quantity,
-                           @Nullable Double price,
-                           @NotNull Boolean reduceOnly,
-                           @NotNull Boolean closePosition
+    public @NotNull OrderResult placeOrder(@NotNull Symbol symbol,
+                                    @NotNull DireccionOperation side,
+                                    @NotNull TypeOrder type,
+                                    @Nullable TimeInForce timeInForce,
+                                    @NotNull Double amount,
+                                    @Nullable Double price,
+                                    @NotNull Boolean reduceOnly,
+                                    @NotNull Boolean closePosition,
+                                    @NotNull Boolean useQuantity
     ) {
         // Para órdenes no condicionales (MARKET, LIMIT), seguir usando el endpoint tradicional
         if (!type.isValidValue(null, price)) throw new IllegalArgumentException();
@@ -119,8 +112,18 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
         params.put("symbol", symbol.name());
         params.put("side", side.getSide());
         params.put("type", type.name());
-        params.put("quantity", symbol.formatQuantity(quantity));
-        if (symbol.getIsFuture()) params.put("closePosition", String.valueOf(closePosition));
+        params.put("newOrderRespType", symbol.getIsFuture() ? "RESULT" : "FULL");
+        if (useQuantity){
+            params.put("quantity", symbol.formatQuantity(amount));
+            Vesta.info("quantity: " + symbol.formatQuantity(amount) + " " + symbol.getStepSize().orElse(null));
+        }else {
+            params.put("quoteOrderQty", symbol.formatQuoteOrderQty(amount));
+            Vesta.info("quoteOrderQty: " + symbol.formatQuoteOrderQty(amount) + " " + symbol.getStepSize().orElse(null));
+        }
+        if (
+                symbol.getIsFuture() &&
+                (type.isTakeProfit() || type.isStopLoss())
+        ) params.put("closePosition", String.valueOf(closePosition));
         if (type.isLimit()) {
             if (timeInForce == null) throw new IllegalArgumentException("Se requiere TimeInForce para ordenes Limites");
             if (price == null) throw new IllegalArgumentException("Se requiere Price para ordenes Limites");
@@ -128,19 +131,61 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
             params.put("timeInForce", timeInForce.name());
             params.put("price", symbol.formatPrice(price));
         }
-        if (reduceOnly) params.put("reduceOnly", "true");
-
+        if (reduceOnly && symbol.getIsFuture()) params.put("reduceOnly", "true");
         JsonNode root = symbol.getIsFuture() ?
                 sendSignedRequest("POST", "/fapi/v1/order", params) :
                 sendSignedRequest("POST", "/api/v3/order", params);
-        return root.get("orderId").asLong();
+        double executedQty = getDouble(root, "executedQty");
+        double cumulativeQuoteQty = getDouble(root, "cummulativeQuoteQty", "cumQuote");
+        double receivedQty = side.isLong() ? executedQty : cumulativeQuoteQty;
+        receivedQty -= getCommissionPaidInReceivedAsset(root, side.isLong() ? symbol.getBaseAsset() : symbol.getQuoteAsset());
+        JsonNode fills = root.get("fills");
+        if (fills != null && fills.isArray()) {
+            for (JsonNode fill : fills) {
+                Vesta.info("Commission: %s %s",
+                        fill.get("commission").asText(),
+                        fill.get("commissionAsset").asText()
+                );
+            }
+        }
+        return new OrderResult(
+                root.get("orderId").asLong(),
+                executedQty,
+                cumulativeQuoteQty,
+                Math.max(0.0, receivedQty)
+                );
+    }
+
+    private double getDouble(@NotNull JsonNode root, @NotNull String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            JsonNode node = root.get(fieldName);
+            if (node != null && !node.isNull()) {
+                String value = node.asText();
+                if (!value.isBlank()) return Double.parseDouble(value);
+            }
+        }
+        return 0.0;
+    }
+
+    private double getCommissionPaidInReceivedAsset(@NotNull JsonNode root, @NotNull String receivedAsset) {
+        JsonNode fills = root.get("fills");
+        if (fills == null || !fills.isArray()) return 0.0;
+
+        double commission = 0.0;
+        for (JsonNode fill : fills) {
+            JsonNode commissionAsset = fill.get("commissionAsset");
+            if (commissionAsset != null && receivedAsset.equals(commissionAsset.asText())) {
+                commission += getDouble(fill, "commission");
+            }
+        }
+        return commission;
     }
     @Override
     public void cancelOrder(@NotNull Symbol symbol, @NotNull Long orderId, @NotNull Boolean isAlgoOrder) {
         try {
             if (orderId == 0) return;
             TreeMap<String, String> params = new TreeMap<>();
-            params.put("symbol", symbol.toString());
+            params.put("symbol", symbol.name());
             if (isAlgoOrder) {
                 params.put("algoId", String.valueOf(orderId));
                 sendSignedRequest("DELETE", "/fapi/v1/algoOrder", params);
@@ -156,7 +201,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     @Override
     public @NotNull List<OrderData> getAllOrdersFuture(@NotNull Symbol symbol) {
         TreeMap<String, String> params = new TreeMap<>();
-        params.put("symbol", symbol.toString());
+        params.put("symbol", symbol.name());
         ArrayList<OrderData> operations = new ArrayList<>();
         List<JsonNode> nodes = new ArrayList<>();
         for (JsonNode node :  sendSignedRequest("GET", "/fapi/v1/openOrders", params)) nodes.add(node);
@@ -187,7 +232,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     @Override
     public PositionData getPosition(@NotNull Symbol symbol) {
         TreeMap<String, String> params = new TreeMap<>();
-        params.put("symbol", symbol.toString());
+        params.put("symbol", symbol.name());
         JsonNode operationsV2 = sendSignedRequest("GET", "/fapi/v2/positionRisk", params);
         JsonNode operationsV3 = sendSignedRequest("GET", "/fapi/v3/positionRisk", params);
         JsonNode operationV2 = Objects.requireNonNull(operationsV2).get(0);
@@ -212,7 +257,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
         try {
             // 1. Obtener posiciones actuales
             TreeMap<String, String> params = new TreeMap<>();
-            params.put("symbol", symbol.toString());
+            params.put("symbol", symbol.name());
             JsonNode positions = sendSignedRequest("GET", "/fapi/v2/positionRisk", params);
 
             for (JsonNode position : Objects.requireNonNull(positions)) {
@@ -224,7 +269,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
 
                         String side = positionAmt > 0 ? "SELL" : "BUY";
                         TreeMap<String, String> closeParams = new TreeMap<>();
-                        closeParams.put("symbol", symbol.toString());
+                        closeParams.put("symbol", symbol.name());
                         closeParams.put("side", side);
                         closeParams.put("type", "MARKET");
                         closeParams.put("quantity", String.valueOf(Math.abs(positionAmt)));
@@ -237,7 +282,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
 
             // 2. Cancelar todas las órdenes abiertas
             TreeMap<String, String> cancelParams = new TreeMap<>();
-            cancelParams.put("symbol", symbol.toString());
+            cancelParams.put("symbol", symbol.name());
             sendSignedRequest("DELETE", "/fapi/v1/allOpenOrders", cancelParams);
         } catch (Exception e) {
             Vesta.error("Error cerrando posiciones existentes: " + e.getMessage());
@@ -253,6 +298,11 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     }
 
     @Override
+    public void checkApikey() {
+        sendSignedRequest("GET", "/api/v3/account", new TreeMap<>());
+    }
+
+    @Override
     public void invalidedCache() {
         exchangeInfoFuture = null;
         exchangeInfoSpot = null;
@@ -261,7 +311,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     @Override
     public @NotNull Double getTickerPrice(@NotNull Symbol symbol) {
         TreeMap<String, String> params = new TreeMap<>();
-        params.put("symbol", symbol.toString());
+        params.put("symbol", symbol.name());
         JsonNode root = symbol.getIsFuture() ?
                 sendPublicRequest("GET", "/fapi/v1/ticker/price", params) :
                 sendPublicRequest("GET", "/api/v1/ticker/price", params);
@@ -352,8 +402,8 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     @Override
     public @NotNull HashMap<String, Double> getBalance(@NotNull Boolean isFuture) {
         JsonNode node;
-        if (isFuture) node = sendPublicRequest("GET", "/fapi/v3/account", new TreeMap<>());
-        else node = sendPublicRequest("GET", "/api/v3/account", new TreeMap<>());
+        if (isFuture) node = sendSignedRequest("GET", "/fapi/v3/account", new TreeMap<>());
+        else node = sendSignedRequest("GET", "/api/v3/account", new TreeMap<>());
 
         return ParseJsonApi.parseBalance(node, isFuture);
     }
@@ -374,7 +424,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
         sendSignedRequest("POST", "/fapi/v1/stock/contract", new TreeMap<>());
     }
 
-    private @NotNull JsonNode sendSignedRequest(@NotNull String method, String endpoint, Map<String, String> params) throws BinanceApiSignedRequestException {
+    private @NotNull JsonNode sendSignedRequest(@NotNull String method, String endpoint, TreeMap<String, String> params) throws BinanceApiSignedRequestException {
         params.put("timestamp", String.valueOf(System.currentTimeMillis()));
         params.put("recvWindow", "20000");
         try {
@@ -395,7 +445,12 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
             }
             JsonNode root = mapper.readTree(response.body());
             String symbolName = params.get("symbol");
-            checkRepose(symbolName == null ? null : Symbol.valueOf(symbolName), root, method, endpoint);
+            Symbol symbol = null;
+            if (symbolName != null && endpoint.startsWith("/fapi")) {
+                symbol = Symbol.valueOf(symbolName);
+            }
+            checkRepose(symbol, root, method, endpoint);
+
             return root;
         }catch (Exception e) {
             exceptionHandler.accept(e);
@@ -441,13 +496,13 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
                 Vesta.info("✅ operacion Ok (%s:%s)", method, endpoint);
             }else {
                 if (WEAK_ERROS_CODE.contains(code)) {
-                    if (code == -2021 && symbol != null) closeAll(symbol);
+                    if (code == -2021 && symbol != null && endpoint.startsWith("/fapi")) closeAll(symbol);
                     BinanceCodeWeakException e = new BinanceCodeWeakException(node, method, endpoint);
                     mediaNotification.waring("Error al hacer una petición: **%s**. Revisa la consola para más información", e.getMessage());
                     Vesta.sendWaringException("Error al hacer una petición" , e);
                     throw e;
                 }else {
-                    if (symbol != null) closeAll(symbol);
+                    if (symbol != null && endpoint.startsWith("/fapi")) closeAll(symbol);
                     BinanceCodeException exception = new BinanceCodeException(node, method, endpoint);
                     mediaNotification.error("Error al hacer una petición: **%s**. Revisa la consola para más información", exception.getMessage());
                     exceptionHandler.accept(exception);

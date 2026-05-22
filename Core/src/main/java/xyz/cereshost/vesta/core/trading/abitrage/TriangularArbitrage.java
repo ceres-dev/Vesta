@@ -15,6 +15,8 @@ import xyz.cereshost.vesta.core.trading.real.api.model.BookTicker;
 import xyz.cereshost.vesta.core.trading.real.api.model.ExchangeInfo;
 import xyz.cereshost.vesta.core.trading.real.api.model.Ticker24H;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
@@ -27,6 +29,8 @@ public class TriangularArbitrage {
 
     private static final double PROFIT_EPSILON = 1e-12;
     private static final double DEFAULT_FEE_RATE = 0.00075; // 0.075% aprox
+    public static final double DEFAULT_START_AMOUNT = 5.1d;
+    private static final String PREFERRED_START_ASSET = "USDT";
     private static final int MIN_CYCLE_LENGTH = 3;
     private static final int MAX_CYCLE_LENGTH = 3;
 
@@ -37,6 +41,8 @@ public class TriangularArbitrage {
     @Nullable private volatile ExchangeInfo exchangeInfoSpot = null;
     @Nullable private volatile Consumer<BookTicker> streamListener = null;
     @NotNull private final ConcurrentMap<String, BookTicker> liveTickers = new ConcurrentHashMap<>();
+    @NotNull private final ConcurrentMap<String, NameAsset> nameAssetCache = new ConcurrentHashMap<>();
+
     @NotNull private final AtomicBoolean calculationInProgress = new AtomicBoolean(false);
     @NotNull private final AtomicBoolean calculationRequested = new AtomicBoolean(false);
     @NotNull private final BlockingDeque<AtomicReference<BookTicker>> pendingUpdatedTicker = new LinkedBlockingDeque<>(256);
@@ -65,16 +71,21 @@ public class TriangularArbitrage {
                 liveTickers.clear();
                 liveTickers.putAll(tickersFuture.get());
 
+                if (exchangeInfoSpot == null) {
+                    Vesta.info("No exchange info found");
+                    return;
+                }
                 Set<Ticker24H> ticker24H = binanceApi.getRequest().getTicker24H(null);
                 HashMap<String, Ticker24H> bookTicker24H = new HashMap<>();
                 for (Ticker24H ticker : ticker24H) {
                     bookTicker24H.put(ticker.symbol(), ticker);
                 }
 
-                Set<String> symbolsToSubscribe = getSpotTradingSymbols(Objects.requireNonNull(exchangeInfoSpot), bookTicker24H);
+                Set<String> symbolsToSubscribe = getSpotTradingSymbols(exchangeInfoSpot, bookTicker24H);
                 liveTickers.keySet().retainAll(symbolsToSubscribe);
                 Consumer<BookTicker> listener = this::onBookTickerUpdate;
                 streamListener = listener;
+                Vesta.info("Total de símbolos disponibles: " + symbolsToSubscribe.size());
                 binanceApi.getStream().subscribeIndividualSymbolBookTickerStreams(
                         symbolsToSubscribe,
                         listener
@@ -193,6 +204,8 @@ public class TriangularArbitrage {
             if (!symbolConfigurable.getIsSpot()) continue;
             if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) continue;
             if (!symbolConfigurable.getIsAllowTrading()) continue;
+            if (!symbolConfigurable.getPermissions().contains("TRD_GRP_074")) continue;
+
 
             Ticker24H ticker24H = bookTicker24H.get(symbolConfigurable.name());
             if (ticker24H == null) continue;
@@ -307,11 +320,10 @@ public class TriangularArbitrage {
             @NotNull Map<String, BookTicker> tickers,
             @Nullable BookTicker updatedTicker
     ) {
-
-        Map<String, ArrayList<ArbitrageEdge>> outgoingByFromAsset = new HashMap<>();
+        Map<NameAsset, LinkedList<ArbitrageEdge>> outgoingByFromAsset = new HashMap<>();
         String updatedSymbol = updatedTicker == null ? null : updatedTicker.symbol();
-        Set<String> trackedAssets = trackedAssetsFromLastTriangular();
-        Set<String> startAssetsToAnalyze = null;
+        Set<NameAsset> trackedAssets = trackedAssetsFromLastTriangular();
+        Set<NameAsset> startAssetsToAnalyze = null;
 
         for (SymbolConfigurable symbolConfigurable : exchangeInfo.symbols()) {
             if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) {
@@ -350,38 +362,43 @@ public class TriangularArbitrage {
             double sellRate = bid * (1.0 - DEFAULT_FEE_RATE);
             double buyRate = (1.0 / ask) * (1.0 - DEFAULT_FEE_RATE);
 
+            NameAsset baseAssetName = nameAssetCache.computeIfAbsent(baseAsset, NameAsset::new);
+            NameAsset quoteAssetName = nameAssetCache.computeIfAbsent(quoteAsset, NameAsset::new);
+
             if (sellRate > 0.0) {
                 addEdge(outgoingByFromAsset, new ArbitrageEdge(
                         symbolName,
-                        new NameAsset(baseAsset),
-                        new NameAsset(quoteAsset),
+                        baseAssetName,
+                        quoteAssetName,
                         sellRate,
                         -Math.log(sellRate),
                         "SELL",
-                        bid
+                        bid,
+                        symbolConfigurable.getStepSize().orElse(0.0)
                 ));
             }
 
             if (buyRate > 0.0) {
                 addEdge(outgoingByFromAsset, new ArbitrageEdge(
                         symbolName,
-                        new NameAsset(quoteAsset),
-                        new NameAsset(baseAsset),
+                        quoteAssetName,
+                        baseAssetName,
                         buyRate,
                         -Math.log(buyRate),
                         "BUY",
-                        ask
+                        ask,
+                        symbolConfigurable.getStepSize().orElse(0.0)
                 ));
             }
 
             if ((updatedSymbol != null && updatedSymbol.equals(symbolName))
-                    || trackedAssets.contains(baseAsset)
-                    || trackedAssets.contains(quoteAsset)) {
+                    || trackedAssets.contains(baseAssetName)
+                    || trackedAssets.contains(quoteAssetName)) {
                 if (startAssetsToAnalyze == null) {
                     startAssetsToAnalyze = new LinkedHashSet<>(2);
                 }
-                startAssetsToAnalyze.add(baseAsset);
-                startAssetsToAnalyze.add(quoteAsset);
+                startAssetsToAnalyze.add(baseAssetName);
+                startAssetsToAnalyze.add(quoteAssetName);
             }
         }
 
@@ -401,7 +418,7 @@ public class TriangularArbitrage {
 
         Set<String> seenCycles = new HashSet<>();
         List<TriangularArbitrageOpportunity> opportunities = new ArrayList<>();
-        Set<String> startAssets = new LinkedHashSet<>();
+        Set<NameAsset> startAssets = new LinkedHashSet<>();
         startAssets.addAll(Objects.requireNonNullElseGet(startAssetsToAnalyze, outgoingByFromAsset::keySet));
         startAssets.addAll(trackedAssets);
         startAssets.retainAll(outgoingByFromAsset.keySet());
@@ -409,14 +426,18 @@ public class TriangularArbitrage {
             return List.of();
         }
 
-        for (String startAsset : startAssets) {
+        HashMap<Long, LinkedList<ArbitrageEdge>> outgoingByFromAssetHash = new HashMap<>();
+        for (Map.Entry<NameAsset, LinkedList<ArbitrageEdge>> entry : outgoingByFromAsset.entrySet()) {
+            outgoingByFromAssetHash.put(entry.getKey().hash, entry.getValue());
+        }
+        for (NameAsset startAsset : startAssets) {
             Deque<ArbitrageEdge> path = new ArrayDeque<>(MAX_CYCLE_LENGTH);
-            Set<String> visitedAssets = new HashSet<>();
-            visitedAssets.add(startAsset);
+            List<String> visitedAssets = new LinkedList<>();
+            visitedAssets.add(startAsset.asset);
             searchCyclesFrom(
-                    new NameAsset(startAsset),
-                    new NameAsset(startAsset),
-                    outgoingByFromAsset,
+                    startAsset,
+                    startAsset,
+                    outgoingByFromAssetHash,
                     path,
                     new IntegerAtomic(0),
                     visitedAssets,
@@ -439,10 +460,10 @@ public class TriangularArbitrage {
     }
 
 
-    private void addEdge(@NotNull Map<String, ArrayList<ArbitrageEdge>> outgoingByFromAsset,
+    private void addEdge(@NotNull Map<NameAsset, LinkedList<ArbitrageEdge>> outgoingByFromAsset,
                          @NotNull ArbitrageEdge edge) {
         outgoingByFromAsset
-                .computeIfAbsent(edge.fromAsset().asset, key -> new ArrayList<>())
+                .computeIfAbsent(edge.fromAsset(), key -> new LinkedList<>())
                 .add(edge);
     }
 
@@ -450,21 +471,20 @@ public class TriangularArbitrage {
     private void searchCyclesFrom(
             @NotNull TriangularArbitrage.NameAsset startAsset,
             @NotNull TriangularArbitrage.NameAsset currentAsset,
-            @NotNull Map<String, ArrayList<ArbitrageEdge>> outgoingByFromAsset,
+            @NotNull Map<Long, LinkedList<ArbitrageEdge>> outgoingByFromAsset,
             @NotNull Deque<ArbitrageEdge> path,
             @NotNull IntegerAtomic sizePath,
-            @NotNull Set<String> visitedAssets,
+            @NotNull List<String> visitedAssets,
             @NotNull Set<String> seenCycles,
             @NotNull List<TriangularArbitrageOpportunity> opportunities
     ) {
-        ArrayList<ArbitrageEdge> outgoing = outgoingByFromAsset.get(currentAsset.asset);
+        LinkedList<ArbitrageEdge> outgoing = outgoingByFromAsset.get(currentAsset.hash);
         if (outgoing == null || outgoing.isEmpty()) {
             return;
         }
 
         for (ArbitrageEdge edge : outgoing) {
             int nextLength = sizePath.get() + 1;
-
 
             if ((startAsset.hash == edge.toAsset.hash)) {
                 if (nextLength < MIN_CYCLE_LENGTH || nextLength > MAX_CYCLE_LENGTH) {
@@ -489,6 +509,7 @@ public class TriangularArbitrage {
             if (nextLength >= MAX_CYCLE_LENGTH) {
                 continue;
             }
+
             if (visitedAssets.contains(edge.toAsset().asset)) {
                 continue;
             }
@@ -518,6 +539,7 @@ public class TriangularArbitrage {
             return null;
         }
 
+        cycleEdges = rotateCycleToPreferredStart(cycleEdges);
         ArbitrageEdge first = cycleEdges.getFirst();
         String startAsset = first.fromAsset().asset;
         String currentAsset = startAsset;
@@ -528,9 +550,6 @@ public class TriangularArbitrage {
         Set<String> distinctAssets = new HashSet<>();
         distinctAssets.add(startAsset);
 
-        double rateProduct = 1.0;
-        double totalWeight = 0.0;
-
         for (int i = 0; i < cycleLength; i++) {
             ArbitrageEdge edge = cycleEdges.get(i);
             if (!currentAsset.equals(edge.fromAsset().asset)) {
@@ -539,9 +558,6 @@ public class TriangularArbitrage {
 
             currentAsset = edge.toAsset().asset;
             cycleAssets.add(currentAsset);
-
-            rateProduct *= edge.rate();
-            totalWeight += edge.weight();
 
             if (i < cycleLength - 1 && !distinctAssets.add(currentAsset)) {
                 return null;
@@ -554,6 +570,14 @@ public class TriangularArbitrage {
         if (distinctAssets.size() != cycleLength) {
             return null;
         }
+
+        SimulationResult simulationResult = simulateCycleWithStepSize(cycleEdges);
+        if (simulationResult == null) {
+            return null;
+        }
+
+        double rateProduct = simulationResult.rateProduct();
+        double totalWeight = -Math.log(rateProduct);
         if (rateProduct <= 1.0 + PROFIT_EPSILON) {
             return null;
         }
@@ -566,7 +590,7 @@ public class TriangularArbitrage {
 
         return new TriangularArbitrageOpportunity(
                 cycleAssets,
-                List.copyOf(cycleEdges),
+                new ArrayList<>(cycleEdges),
                 lifeTime,
                 rateProduct,
                 (rateProduct - 1.0) * 100.0,
@@ -574,12 +598,75 @@ public class TriangularArbitrage {
         );
     }
 
-    private @NotNull Set<String> trackedAssetsFromLastTriangular() {
-        Set<String> trackedAssets = new HashSet<>();
+    private @NotNull List<ArbitrageEdge> rotateCycleToPreferredStart(@NotNull List<ArbitrageEdge> cycleEdges) {
+        int preferredIndex = -1;
+        for (int i = 0; i < cycleEdges.size(); i++) {
+            if (PREFERRED_START_ASSET.equals(cycleEdges.get(i).fromAsset().asset)) {
+                preferredIndex = i;
+                break;
+            }
+        }
+        if (preferredIndex <= 0) {
+            return new ArrayList<>(cycleEdges);
+        }
+
+        List<ArbitrageEdge> rotated = new ArrayList<>(cycleEdges);
+        Collections.rotate(rotated, -preferredIndex);
+        return rotated;
+    }
+
+    private @Nullable SimulationResult simulateCycleWithStepSize(@NotNull List<ArbitrageEdge> cycleEdges) {
+        double amount = DEFAULT_START_AMOUNT;
+        for (ArbitrageEdge edge : cycleEdges) {
+            if (!Double.isFinite(amount) || amount <= 0.0) {
+                return null;
+            }
+
+            if ("SELL".equals(edge.action())) {
+                double quantity = roundDownToStepSize(amount, edge.stepSize());
+                if (!Double.isFinite(quantity) || quantity <= 0.0) {
+                    return null;
+                }
+                amount = quantity * edge.referencePrice() * (1.0 - DEFAULT_FEE_RATE);
+                continue;
+            }
+
+            if ("BUY".equals(edge.action())) {
+                double quantity = roundDownToStepSize(amount / edge.referencePrice(), edge.stepSize());
+                if (!Double.isFinite(quantity) || quantity <= 0.0) {
+                    return null;
+                }
+                amount = quantity * (1.0 - DEFAULT_FEE_RATE);
+                continue;
+            }
+
+            return null;
+        }
+
+        if (!Double.isFinite(amount) || amount <= 0.0) {
+            return null;
+        }
+        return new SimulationResult(amount / DEFAULT_START_AMOUNT, amount);
+    }
+
+    private double roundDownToStepSize(double amount, double stepSize) {
+        if (!Double.isFinite(amount) || amount <= 0.0) {
+            return 0.0;
+        }
+        if (!Double.isFinite(stepSize) || stepSize <= 0.0) {
+            return amount;
+        }
+
+        double result = Math.floor(amount / stepSize) * stepSize;
+        return Math.round(result * 1e12) / 1e12;
+    }
+
+    private @NotNull Set<NameAsset> trackedAssetsFromLastTriangular() {
+        Set<NameAsset> trackedAssets = new HashSet<>();
         for (String cycleKey : lastTriangular.keySet()) {
             String[] assets = cycleKey.split("->");
             int limit = Math.max(0, assets.length - 1); // el último repite el inicio
-            trackedAssets.addAll(Arrays.asList(assets).subList(0, limit));
+            trackedAssets.addAll(Arrays.asList(assets).subList(0, limit).stream().map(NameAsset::new).toList());
         }
         return trackedAssets;
     }
@@ -620,7 +707,13 @@ public class TriangularArbitrage {
             double rate,
             double weight,
             String action,
-            double referencePrice
+            double referencePrice,
+            double stepSize
+    ) {}
+
+    private record SimulationResult(
+            double rateProduct,
+            double endAmount
     ) {}
 
     public record TriangularArbitrageOpportunity(
@@ -646,13 +739,13 @@ public class TriangularArbitrage {
 
     public static class NameAsset {
         public final String asset;
-        public final long hash;
+        public final Long hash;
 
         private static final HashMap<String, Byte[]> cacheBytes = new HashMap<>();
 
         public NameAsset(String asset) {
             this.asset = asset;
-            long h = 0;
+            long h = 0L;
             for (byte b : cacheBytes.computeIfAbsent(asset, a -> {
                 byte[] bytes = a.getBytes(StandardCharsets.UTF_8);
                 Byte[] byteArray = new Byte[bytes.length];
@@ -664,6 +757,19 @@ public class TriangularArbitrage {
                 h = 7 * ((h + 37) << b);
             }
             this.hash = h;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o instanceof NameAsset nameAsset) {
+                return Objects.equals(nameAsset.hash, this.hash);
+            }
+            return false;
+        }
+
+        @Override
+        public int hashCode() {
+            return hash.intValue();
         }
     }
 

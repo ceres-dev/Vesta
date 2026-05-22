@@ -3,6 +3,8 @@ package xyz.cereshost.vesta.core.market;
 import org.jetbrains.annotations.NotNull;
 import xyz.cereshost.vesta.core.trading.real.api.BinanceApi;
 
+import java.util.Optional;
+
 // Todos los symbolos de futuros
 public enum SymbolFutures implements Symbol {
     A2ZUSDT,
@@ -845,6 +847,11 @@ public enum SymbolFutures implements Symbol {
 
     public @NotNull Integer getQuantityPrecision() {
         return this.symbolConfigurable.getQuantityPrecision();
+    }
+
+    @Override
+    public @NotNull Optional<Double> getStepSize() {
+        return this.symbolConfigurable.getStepSize();
     }
 
     public @NotNull MarketStatus getMarketStatus() {
