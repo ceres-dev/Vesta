@@ -6,40 +6,51 @@ import xyz.cereshost.vesta.common.Vesta;
 import xyz.cereshost.vesta.core.Main;
 import xyz.cereshost.vesta.core.command.Arguments;
 import xyz.cereshost.vesta.core.command.BaseCommand;
+import xyz.cereshost.vesta.core.command.Flags;
 import xyz.cereshost.vesta.core.market.DireccionOperation;
 import xyz.cereshost.vesta.core.market.SymbolConfigurable;
 import xyz.cereshost.vesta.core.message.DiscordNotification;
 import xyz.cereshost.vesta.core.message.MediaNotification;
-import xyz.cereshost.vesta.core.trading.TypeOrder;
 import xyz.cereshost.vesta.core.trading.abitrage.TriangularArbitrage;
-import xyz.cereshost.vesta.core.trading.real.api.BinanceApiRest;
-import xyz.cereshost.vesta.core.trading.real.api.BinanceWebSocketFull;
+import xyz.cereshost.vesta.core.trading.real.api.BinanceConnectorArbitrage;
 import xyz.cereshost.vesta.core.trading.real.api.model.OrderResult;
 import xyz.cereshost.vesta.core.utils.LoaderIndicator;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class Arbitration extends BaseCommand {
+public class Arbitration extends BaseCommand implements Flags {
 
     public Arbitration() {
         super("Ejecuta una estrategia de arbitraje triangular");
+    }
+
+    @Override
+    public List<Flag> getFlags() {
+        return List.of(new Flag("testnet", TypeValue.BOOLEAN));
     }
 
     private final Set<TriangularArbitrage.TriangularArbitrageOpportunity> opportunityWindows = new HashSet<>();
 
     @Override
     public void execute(Arguments arguments) throws Exception {
-        boolean isTestNet = false;
-        BinanceWebSocketFull apiWebSocket = new BinanceWebSocketFull(isTestNet);
-
         LoaderIndicator loaderIndicator = new LoaderIndicator(10);
         loaderIndicator.setLabel("Buscado Arbitrajes...");
 
-        BinanceApiRest apiRest = new BinanceApiRest(isTestNet, true);
+        boolean isTestNet = arguments.getFlagBolean("testnet");
+        BinanceConnectorArbitrage binance = new BinanceConnectorArbitrage(isTestNet, Executors.newThreadPerTaskExecutor(new ThreadFactory() {
+            private int i = 0;
+
+            @Override
+            public Thread newThread(@NotNull Runnable r){
+                Thread t = new Thread(r);
+                t.setName("stream-webSocket-" + i);
+                i++;
+                return t;
+            }
+        }));
+        binance.checkApikey();
 
         MediaNotification mediaNotification = new DiscordNotification();
 
@@ -47,15 +58,15 @@ public class Arbitration extends BaseCommand {
         mediaNotification.updateStatus("Analizado todos los mercados");
 
         AtomicLong windowStart = new AtomicLong(0L);
-        ExecutorArbitrage executorArbitrage = new ExecutorArbitrage(Main.EXECUTOR, apiRest, mediaNotification);
+        ExecutorArbitrage executorArbitrage = new ExecutorArbitrage(Main.EXECUTOR, binance, mediaNotification);
         AtomicLong counterDecent = new AtomicLong(0L);
-        apiRest.checkApikey();
-        for (Map.Entry<String, Double> entry : apiRest.getBalance(false).entrySet()) {
+
+        for (Map.Entry<String, Double> entry : binance.getBalance().entrySet()) {
             if (entry.getValue() == 0) continue;
-            Vesta.info(entry.getKey() + ": " + entry.getValue());
+//            Vesta.info(entry.getKey() + ": " + entry.getValue());
         }
 
-        TriangularArbitrage triangularArbitrage = new TriangularArbitrage(apiWebSocket, opportunities -> {
+        TriangularArbitrage triangularArbitrage = new TriangularArbitrage(binance, opportunities -> {
             updateLoader(loaderIndicator, counterDecent);
             updateStatus(mediaNotification, counterDecent);
             HashSet<TriangularArbitrage.TriangularArbitrageOpportunity> current = new HashSet<>(opportunities);
@@ -129,6 +140,7 @@ public class Arbitration extends BaseCommand {
     private final Queue<Long> deltasProcessing = new LinkedList<>();
     private final AtomicLong startProcessing = new AtomicLong(System.currentTimeMillis());
 
+    @SuppressWarnings("OptionalGetWithoutIsPresent")
     private void updateLoader(LoaderIndicator loaderIndicator, AtomicLong counter) {
         long time = System.currentTimeMillis();
         if (deltasProcessing.size() > 100) deltasProcessing.poll();
@@ -136,7 +148,8 @@ public class Arbitration extends BaseCommand {
         deltasProcessing.offer(time - startProcessing.get());
         startProcessing.set(time);
         double avgProcessing = deltasProcessing.stream().mapToLong(Long::longValue).average().getAsDouble();
-        loaderIndicator.setLabel("%dms (%.2fu/s) Arbitraje detectados: %d. Buscando arbitrajes...".formatted((int) avgProcessing, 1000 / avgProcessing, counter.get()));
+        loaderIndicator.setLabel("%dms (%.2fu/s) Arbitraje detectados: %d. Buscando arbitrajes..."
+                .formatted((int) avgProcessing, 1000 / avgProcessing, counter.get()));
         loaderIndicator.printAndNexStep();
     }
 
@@ -153,18 +166,18 @@ public class Arbitration extends BaseCommand {
     @RequiredArgsConstructor
     public static class ExecutorArbitrage {
         private final @NotNull ScheduledExecutorService executor;
-        private final @NotNull BinanceApiRest binanceApi;
+        private final @NotNull BinanceConnectorArbitrage binanceApi;
         private final @NotNull HashMap<String, SymbolConfigurable> symbolsByName;
         private final @NotNull MediaNotification mediaNotification;
 
         public ExecutorArbitrage(@NotNull ScheduledExecutorService executor,
-                                 @NotNull BinanceApiRest binanceApi,
+                                 @NotNull BinanceConnectorArbitrage binanceApi,
                                  @NotNull MediaNotification mediaNotification
         ) {
             this.executor = executor;
             this.binanceApi = binanceApi;
             HashMap<String, SymbolConfigurable> symbolsByName = new HashMap<>();
-            for (SymbolConfigurable symbolConfigurable : binanceApi.getExchangeInfo(false).symbols()) {
+            for (SymbolConfigurable symbolConfigurable : binanceApi.getExchangeInfo().symbols()) {
                 symbolsByName.put(symbolConfigurable.name(), symbolConfigurable);
             }
             this.symbolsByName = symbolsByName;
@@ -265,13 +278,10 @@ public class Arbitration extends BaseCommand {
                                 }
                                 Vesta.info("Balance: " + balance + " " + edge.fromAsset().asset);
                                 DireccionOperation direccion = DireccionOperation.parse(edge.action());
-                                OrderResult orderResult = binanceApi.placeOrder(
+                                OrderResult orderResult = binanceApi.placeMarketOrder(
                                         symbol,
                                         direccion,
-                                        TypeOrder.MARKET,
-                                        null,
                                         balance,
-                                        null,
                                         direccion.isShort()
                                 );
                                 balance = orderResult.receivedQty();

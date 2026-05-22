@@ -10,13 +10,11 @@ import xyz.cereshost.vesta.common.Vesta;
 import xyz.cereshost.vesta.core.Main;
 import xyz.cereshost.vesta.core.market.MarketStatus;
 import xyz.cereshost.vesta.core.market.SymbolConfigurable;
-import xyz.cereshost.vesta.core.trading.real.api.BinanceWebSocketFull;
+import xyz.cereshost.vesta.core.trading.real.api.BinanceConnectorArbitrage;
 import xyz.cereshost.vesta.core.trading.real.api.model.BookTicker;
 import xyz.cereshost.vesta.core.trading.real.api.model.ExchangeInfo;
 import xyz.cereshost.vesta.core.trading.real.api.model.Ticker24H;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
@@ -34,7 +32,7 @@ public class TriangularArbitrage {
     private static final int MIN_CYCLE_LENGTH = 3;
     private static final int MAX_CYCLE_LENGTH = 3;
 
-    private final BinanceWebSocketFull binanceApi;
+    private final BinanceConnectorArbitrage binanceApi;
     private final Consumer<List<TriangularArbitrageOpportunity>> onOpportunity;
 
     private volatile boolean started = false;
@@ -57,11 +55,11 @@ public class TriangularArbitrage {
         calculationExecutor = executor;
 
         CompletableFuture<ExchangeInfo> exchangeInfoFuture = CompletableFuture.supplyAsync(
-                () -> binanceApi.getRequest().getExchangeInfo(false),
+                binanceApi::getExchangeInfo,
                 Main.EXECUTOR
         );
         CompletableFuture<Map<String, BookTicker>> tickersFuture = CompletableFuture.supplyAsync(
-                () -> binanceApi.getRequest().getBookTickers(null, false),
+                binanceApi::getBookTickers,
                 Main.EXECUTOR
         );
 
@@ -75,7 +73,7 @@ public class TriangularArbitrage {
                     Vesta.info("No exchange info found");
                     return;
                 }
-                Set<Ticker24H> ticker24H = binanceApi.getRequest().getTicker24H(null);
+                Set<Ticker24H> ticker24H = binanceApi.getTicker24H();
                 HashMap<String, Ticker24H> bookTicker24H = new HashMap<>();
                 for (Ticker24H ticker : ticker24H) {
                     bookTicker24H.put(ticker.symbol(), ticker);
@@ -86,7 +84,7 @@ public class TriangularArbitrage {
                 Consumer<BookTicker> listener = this::onBookTickerUpdate;
                 streamListener = listener;
                 Vesta.info("Total de símbolos disponibles: " + symbolsToSubscribe.size());
-                binanceApi.getStream().subscribeIndividualSymbolBookTickerStreams(
+                binanceApi.subscribeIndividualSymbolBookTickerStreams(
                         symbolsToSubscribe,
                         listener
                 );
@@ -109,7 +107,7 @@ public class TriangularArbitrage {
         started = false;
         Consumer<BookTicker> listener = streamListener;
         if (listener != null) {
-            binanceApi.getStream().removeBookTickerListener(listener);
+            binanceApi.removeBookTickerListener(listener);
         }
         streamListener = null;
         exchangeInfoSpot = null;
@@ -204,7 +202,7 @@ public class TriangularArbitrage {
             if (!symbolConfigurable.getIsSpot()) continue;
             if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) continue;
             if (!symbolConfigurable.getIsAllowTrading()) continue;
-            if (!symbolConfigurable.getPermissions().contains("TRD_GRP_074")) continue;
+//            if (!symbolConfigurable.getPermissions().contains("TRD_GRP_074")) continue;
 
 
             Ticker24H ticker24H = bookTicker24H.get(symbolConfigurable.name());

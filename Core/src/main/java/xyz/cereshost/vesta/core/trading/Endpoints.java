@@ -18,8 +18,8 @@ public enum Endpoints {
     DEMO_FAPI("https://demo-fapi.binance.com", true, true, true),
     API_WSS_TEST("wss://ws-api.testnet.binance.vision/ws-api/v3", true, false, false),
     API_WSS("wss://ws-api.binance.com:443/ws-api/v3", false, false, false),
-    STREAM_WSS_TEST("wss://stream.testnet.binance.vision/ws", true, false, false),
-    STREAM_WSS("wss://stream.binance.com:9443/ws", false, false, false);
+    STREAM_WSS_TEST("wss://stream.testnet.binance.vision/stream?streams=", true, false, false),
+    STREAM_WSS("wss://stream.binance.com/stream?streams=", false, false, false);
 
     private final String endpoint;
     private final boolean isTest;
