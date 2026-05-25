@@ -35,7 +35,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
-@SuppressWarnings("ExtractMethodRecommender")
 public final class BinanceConnectorArbitrage implements AutoCloseable {
 
     private static final int MAX_STREAMS_PER_SUBSCRIBE = 200;
@@ -69,8 +68,6 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
         try {
             this.api = new SpotWebSocketApi(apiConfiguration);
         }catch (ApiException e){
-
-            System.out.println("Error connecting to API: " + ((org.eclipse.jetty.websocket.core.exception.UpgradeException) (e.getCause().getCause().getCause())).getRequestURI());
             throw new  RuntimeException(e);
         }
 
@@ -135,10 +132,10 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
         }
 
         var response = api.exchangeInfo(new ExchangeInfoRequest().showPermissionSets(true)).get(TIMEOUT, TimeUnit.SECONDS);
-        Set<SymbolConfigurable> symbols = new HashSet<>();
+        HashMap<String, SymbolConfigurable> symbols = new HashMap<>();
         checkResult(response);
         for (ExchangeInfoResponseResultSymbolsInner symbol : response.getResult().getSymbols()) {
-            symbols.add(toSymbolConfigurable(symbol));
+            symbols.put(symbol.getSymbol(), toSymbolConfigurable(symbol));
         }
         exchangeInfoSpot = new ExchangeInfo(List.of(), symbols);
         return exchangeInfoSpot;
@@ -203,10 +200,8 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
         checkResult(request);
         if (useQuantity) {
             request.quantity(Double.valueOf(symbol.formatQuantity(amount)));
-            Vesta.info("quantity: " + symbol.formatQuantity(amount) + " " + symbol.getStepSize().orElse(null));
         } else {
             request.quoteOrderQty(Double.valueOf(symbol.formatQuoteOrderQty(amount)));
-            Vesta.info("quoteOrderQty: " + symbol.formatQuoteOrderQty(amount) + " " + symbol.getStepSize().orElse(null));
         }
 
         OrderPlaceResponseResult order = api.orderPlace(request).get(30, TimeUnit.SECONDS).getResult();
@@ -278,7 +273,7 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
             return;
         }
         bookTickerReaderRunning = true;
-        Vesta.info("Test. " + bookTickerQueues.size());
+
         for (StreamBlockingQueue<String> queue : bookTickerQueues) {
             streamExecutor.execute(() -> {
                 while (bookTickerReaderRunning) {
@@ -304,15 +299,15 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
     }
 
     private void readBookTickerQueues() {
-        while (bookTickerReaderRunning) {
-//            boolean consumed = false;
-            for (StreamBlockingQueue<String> queue : bookTickerQueues) {
-
-            }
-//            if (!consumed) {
-//                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+//        while (bookTickerReaderRunning) {
+////            boolean consumed = false;
+//            for (StreamBlockingQueue<String> queue : bookTickerQueues) {
+//
 //            }
-        }
+////            if (!consumed) {
+////                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(2));
+////            }
+//        }
     }
 
     private @NotNull SymbolConfigurable toSymbolConfigurable(@NotNull ExchangeInfoResponseResultSymbolsInner symbol) {
@@ -434,7 +429,6 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
     }
 
     public void checkResult(BaseDTO result){
-        Vesta.info(result.getClass() +" ");
         if (result.getError() != null && result.getError().getCode() != 200) {
             throw new IllegalStateException(result.getError().getMsg());
         }

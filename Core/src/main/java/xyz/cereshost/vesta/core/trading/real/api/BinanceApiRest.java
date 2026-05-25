@@ -364,7 +364,7 @@ public final class BinanceApiRest extends BaseConnector implements BinanceApi {
     public @NotNull SymbolConfigurable getSymbolConfigured(@NotNull String symbol, @NotNull Boolean shouldFuture) {
         return cacheSymbols.computeIfAbsent((shouldFuture ? "F-" : "S-") + symbol, s -> {
             ExchangeInfo exchangeInfo = getExchangeInfo(shouldFuture);
-            for (SymbolConfigurable symbolC : exchangeInfo.symbols()){
+            for (SymbolConfigurable symbolC : exchangeInfo.symbols().values()){
                 if (symbolC.name().equals(symbol)){
                     return symbolC;
                 }

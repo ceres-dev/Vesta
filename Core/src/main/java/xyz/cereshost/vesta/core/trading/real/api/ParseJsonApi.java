@@ -21,7 +21,7 @@ public class ParseJsonApi {
     public ObjectMapper mapper = new ObjectMapper();
 
     public @NotNull ExchangeInfo parseExchangeInfo(@NotNull JsonNode node, @NotNull Boolean isFuture) {
-        Set<SymbolConfigurable> symbols = new HashSet<>();
+        HashMap<String, SymbolConfigurable> symbols = new HashMap<>();
         for (JsonNode info : node.get("symbols")) {
             String symbol = info.get("symbol").asText();
 //            Iterator<String> iterator = info.fieldNames();
@@ -41,7 +41,7 @@ public class ParseJsonApi {
                 permission.add(permissions.asText());
             }
 
-            symbols.add(
+            symbols.put(symbol,
                     isFuture ?
                             new SymbolConfigurable(
                                     symbol,
