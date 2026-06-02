@@ -32,6 +32,7 @@ public class TriangularArbitrage {
     private static final String PREFERRED_START_ASSET = "USDT";
     private static final int MIN_CYCLE_LENGTH = 3;
     private static final int MAX_CYCLE_LENGTH = 3;
+    private static final int MAX_SYMBOL = 500;
 
     private final BinanceConnectorArbitrage binanceApi;
     private final Consumer<ResultOpportunities> onOpportunity;
@@ -93,7 +94,7 @@ public class TriangularArbitrage {
                     isSubcribed = true;
                 }
                 buildGraf(exchangeInfoSpot);
-                requestCalculation(null);
+                onBookTickerUpdate(null);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 stopSearch();
@@ -122,7 +123,8 @@ public class TriangularArbitrage {
         lastTriangular.clear();
     }
 
-    private void buildGraf(@NotNull ExchangeInfo exchangeInfoSpot){
+    private Map<NameAsset, ArrayList<ArbitrageEdge>> buildGraf(@NotNull ExchangeInfo exchangeInfoSpot){
+        Map<NameAsset, ArrayList<ArbitrageEdge>> map = new HashMap<>();
         for (SymbolConfigurable symbolConfigurable : exchangeInfoSpot.symbols().values()) {
             if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) {
                 continue;
@@ -139,8 +141,8 @@ public class TriangularArbitrage {
                 continue;
             }
 
-            double bid = ticker.bidPrice();;
-            double ask = ticker.askPrice();;
+            double bid = ticker.bidPrice();
+            double ask = ticker.askPrice();
 
             if (bid <= 0.0 || ask <= 0.0) {
                 continue;
@@ -166,7 +168,7 @@ public class TriangularArbitrage {
             NameAsset quoteAssetName = nameAssetCache.computeIfAbsent(quoteAsset, NameAsset::new);
 
             if (sellRate > 0.0) {
-                addEdge(outgoingByFromAsset, new ArbitrageEdge(
+                addEdge(map, new ArbitrageEdge(
                         symbolName,
                         baseAssetName,
                         quoteAssetName,
@@ -180,7 +182,7 @@ public class TriangularArbitrage {
             }
 
             if (buyRate > 0.0) {
-                addEdge(outgoingByFromAsset, new ArbitrageEdge(
+                addEdge(map, new ArbitrageEdge(
                         symbolName,
                         quoteAssetName,
                         baseAssetName,
@@ -193,21 +195,18 @@ public class TriangularArbitrage {
                 ));
             }
         }
-    }
-
-    private void onBookTickerUpdate(@NotNull BookTicker bookTicker) {
-        if (!started) {
-            return;
-        }
-        requestCalculation(bookTicker);
+        return map;
     }
 
     @SuppressWarnings("DataFlowIssue")
-    private void requestCalculation(@Nullable BookTicker updatedTicker) {
+    private void onBookTickerUpdate(@Nullable BookTicker updatedTicker) {
+        if (!started) {
+            return;
+        }
         if (calculationExecutor == null) {
             return;
         }
-        long maxNanoTime = TimeUnit.MILLISECONDS.toNanos(5);
+        long maxNanoTime = TimeUnit.MILLISECONDS.toNanos(15);
         ExpiredReference<BookTicker> bookTickerExpiredReference = new ExpiredReference<>(updatedTicker, maxNanoTime);
         if (updatedTicker != null) {
             liveTickers.put(updatedTicker.symbol(), updatedTicker);
@@ -226,12 +225,7 @@ public class TriangularArbitrage {
             List<TriangularArbitrageOpportunity> list;
             BookTicker bt = bookTicker.get();
             if (bookTicker.isValid()) {
-                ExchangeInfo exchangeInfo = exchangeInfoSpot;
-                if (exchangeInfo == null) {
-                    return;
-                }
                 list = findTriangularArbitrageOpportunities(
-                        exchangeInfo,
                         // Si es nulo se hará una analizáis total al grafo
                         bt
                 );
@@ -252,7 +246,7 @@ public class TriangularArbitrage {
             if (!symbolConfigurable.getIsSpot()) continue;
             if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) continue;
             if (!symbolConfigurable.getIsAllowTrading()) continue;
-//            if (!symbolConfigurable.getPermissions().contains("TRD_GRP_074")) continue;
+            if (!symbolConfigurable.getPermissions().contains("TRD_GRP_074")) continue;
 
 
             Ticker24H ticker24H = bookTicker24H.get(symbolConfigurable.name());
@@ -273,7 +267,7 @@ public class TriangularArbitrage {
         }
 
         candidates.sort((a, b) -> Double.compare(b.volumeUsdt(), a.volumeUsdt()));
-        int limit = Math.min(1000, candidates.size());
+        int limit = Math.min(MAX_SYMBOL, candidates.size());
         Set<String> result = new HashSet<>(limit);
         for (int i = 0; i < limit; i++) {
             result.add(candidates.get(i).symbol());
@@ -353,95 +347,21 @@ public class TriangularArbitrage {
     ) {}
 
     private final ConcurrentMap<String, TriangularArbitrageOpportunity> lastTriangular = new ConcurrentHashMap<>();
-    private final ConcurrentMap<NameAsset, ArrayList<ArbitrageEdge>> outgoingByFromAsset = new ConcurrentHashMap<>();
 
     @SneakyThrows
     public @NotNull List<TriangularArbitrageOpportunity> findTriangularArbitrageOpportunities(
-            @NotNull ExchangeInfo exchangeInfo,
             @Nullable BookTicker updatedTicker
     ) {
-        Map<NameAsset, ArrayList<ArbitrageEdge>> outgoingByFromAsset = new HashMap<>();
+        Map<NameAsset, ArrayList<ArbitrageEdge>> outgoingByFromAsset = buildGraf(Objects.requireNonNull(exchangeInfoSpot));
         String updatedSymbol = updatedTicker == null ? null : updatedTicker.symbol();
         Set<NameAsset> trackedAssets = trackedAssetsFromLastTriangular();
-
-
-        for (SymbolConfigurable symbolConfigurable : exchangeInfo.symbols().values()) {
-            if (!MarketStatus.TRADING.equals(symbolConfigurable.getMarketStatus())) {
-                continue;
-            }
-
-            // Solo spot para arbitraje triangular clásico
-            if (!symbolConfigurable.getIsSpot()) {
-                continue;
-            }
-
-            String symbolName = symbolConfigurable.name();
-            BookTicker ticker = liveTickers.get(symbolName);
-            if (ticker == null) {
-                continue;
-            }
-
-            double bid = ticker.bidPrice();;
-            double ask = ticker.askPrice();;
-
-            if (bid <= 0.0 || ask <= 0.0) {
-                continue;
-            }
-
-            double bidLiquidity = ticker.bidQty();
-            double askLiquidity = ticker.askQty();
-
-            if (bidLiquidity <= 0.0 || askLiquidity <= 0.0) {
-                continue;
-            }
-
-            String baseAsset = symbolConfigurable.getBaseAsset();
-            String quoteAsset = symbolConfigurable.getQuoteAsset();
-            if (baseAsset.equals("?") || quoteAsset.equals("?")) {
-                continue;
-            }
-
-            double sellRate = bid * (1.0 - DEFAULT_FEE_RATE);
-            double buyRate = (1.0 / ask) * (1.0 - DEFAULT_FEE_RATE);
-
-            NameAsset baseAssetName = nameAssetCache.computeIfAbsent(baseAsset, NameAsset::new);
-            NameAsset quoteAssetName = nameAssetCache.computeIfAbsent(quoteAsset, NameAsset::new);
-
-            if (sellRate > 0.0) {
-                addEdge(outgoingByFromAsset, new ArbitrageEdge(
-                        symbolName,
-                        baseAssetName,
-                        quoteAssetName,
-                        sellRate,
-                        -Math.log(sellRate),
-                        "SELL",
-                        bid,
-                        bidLiquidity,
-                        symbolConfigurable.getStepSize().orElse(0.0)
-                ));
-            }
-
-            if (buyRate > 0.0) {
-                addEdge(outgoingByFromAsset, new ArbitrageEdge(
-                        symbolName,
-                        quoteAssetName,
-                        baseAssetName,
-                        buyRate,
-                        -Math.log(buyRate),
-                        "BUY",
-                        ask,
-                        askLiquidity,
-                        symbolConfigurable.getStepSize().orElse(0.0)
-                ));
-            }
-        }
 
         Set<NameAsset> startAssetsToAnalyze;
         final boolean detectTriangularPrev;
 
         if (updatedSymbol != null) {
             startAssetsToAnalyze = new LinkedHashSet<>(2);
-            SymbolConfigurable symbol = exchangeInfo.symbols().get(updatedSymbol);
+            SymbolConfigurable symbol = exchangeInfoSpot.symbols().get(updatedSymbol);
             NameAsset baseAssetName = nameAssetCache.computeIfAbsent(symbol.getBaseAsset(), NameAsset::new);
             NameAsset quoteAssetName = nameAssetCache.computeIfAbsent(symbol.getQuoteAsset(), NameAsset::new);
             startAssetsToAnalyze.add(baseAssetName);
@@ -477,14 +397,12 @@ public class TriangularArbitrage {
         Set<NameAsset> startAssets = new LinkedHashSet<>(
                 Objects.requireNonNullElseGet(startAssetsToAnalyze, outgoingByFromAsset::keySet)
         );
-//        startAssets.addAll(trackedAssets);
         startAssets.retainAll(outgoingByFromAsset.keySet());
-//        System.out.println(startAssets.size() + " C");
         if (startAssets.isEmpty()) {
             return List.of();
         }
 
-        ConcurrentHashMap<Integer, ArrayList<ArbitrageEdge>> outgoingByFromAssetHash = new ConcurrentHashMap<>();
+        ConcurrentHashMap<Integer, ArrayList<ArbitrageEdge>> outgoingByFromAssetHash = new ConcurrentHashMap<>(1024);
         for (ConcurrentMap.Entry<NameAsset, ArrayList<ArbitrageEdge>> entry : outgoingByFromAsset.entrySet()) {
             outgoingByFromAssetHash.put(entry.getKey().hash, entry.getValue());
         }

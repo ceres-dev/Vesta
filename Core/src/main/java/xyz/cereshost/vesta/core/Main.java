@@ -48,7 +48,7 @@ public class Main {
     public static final HanderCommand handerCommand = new HanderCommand();
     public static final String NAME_MODEL = "VestaIA";
 
-    public static final ScheduledExecutorService EXECUTOR = Executors.newScheduledThreadPool(8);
+    public static final ScheduledExecutorService EXECUTOR = Executors.newScheduledThreadPool(12);
 
     @NotNull public static final TypeMarket TYPE_MARKET = new TypeMarket(SymbolFutures.ETHUSDC, TimeFrameMarket.FIVE_MINUTE);
     @NotNull public static final List<TypeMarket> SYMBOLS_TRAINING = List.of(TYPE_MARKET);

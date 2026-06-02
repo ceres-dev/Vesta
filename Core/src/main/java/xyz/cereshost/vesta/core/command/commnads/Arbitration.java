@@ -20,10 +20,11 @@ import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 public class Arbitration extends BaseCommand implements Flags {
 
-    public Arbitration() {
+    public Arbitration()  {
         super("Ejecuta una estrategia de arbitraje triangular");
     }
 
@@ -66,6 +67,7 @@ public class Arbitration extends BaseCommand implements Flags {
             if (entry.getValue() == 0) continue;
 //            Vesta.info(entry.getKey() + ": " + entry.getValue());
         }
+        Vesta.info("USDT: " + binance.getBalance().get("USDT"));
 
         TriangularArbitrage triangularArbitrage = new TriangularArbitrage(binance, opportunities -> {
             updateLoader(loaderIndicator, counterDecent, opportunities.startTime());
@@ -130,12 +132,12 @@ public class Arbitration extends BaseCommand implements Flags {
 
         });
         triangularArbitrage.startSearch(Main.EXECUTOR, true);
-        Main.EXECUTOR.scheduleAtFixedRate(() -> {
-            executorArbitrage.onTick(List.of());
-            triangularArbitrage.stopSearch(); // TODO: Arreglar esto.
-            triangularArbitrage.startSearch(Main.EXECUTOR, true);
-            Vesta.info("Reiniciando cache");
-        }, 2, 2, TimeUnit.HOURS);
+//        Main.EXECUTOR.scheduleAtFixedRate(() -> {
+//            executorArbitrage.onTick(List.of());
+//            triangularArbitrage.stopSearch(); // TODO: Arreglar esto.
+//            triangularArbitrage.startSearch(Main.EXECUTOR, true);
+//            Vesta.info("Reiniciando cache");
+//        }, 2, 2, TimeUnit.HOURS);
     }
 
     private final Queue<Long> deltasProcessing = new LinkedList<>();
@@ -218,46 +220,49 @@ public class Arbitration extends BaseCommand implements Flags {
             }
 
             if (best != null) {
+                if (best.getProfitPercent() < 0.1f) return;
                 final TriangularArbitrage.TriangularArbitrageOpportunity b = best;
                 executor.schedule(() -> {
                     for (TriangularArbitrage.TriangularArbitrageOpportunity opportunity : lastOpportunities) {
-                        if (b.getEdges().size() == opportunity.getEdges().size() && new HashSet<>(b.getAssetsCycle()).containsAll(opportunity.getAssetsCycle())) {
+                        if (
+                                b.getEdges().size() != opportunity.getEdges().size() ||
+                                        !new HashSet<>(b.getAssetsCycle()).containsAll(opportunity.getAssetsCycle())
+                        ) return;
+                        TriangularArbitrage.ArbitrageEdge USDT = null;
 
-                            TriangularArbitrage.ArbitrageEdge USDT = null;
-
-                            for (TriangularArbitrage.ArbitrageEdge edge : opportunity.getEdges()) {
-                                if (edge.fromAsset().asset.equals("USDT")){
-                                    USDT = edge;
-                                    break;
-                                }
+                        for (TriangularArbitrage.ArbitrageEdge edge : opportunity.getEdges()) {
+                            if (edge.fromAsset().asset.equals("USDT")){
+                                USDT = edge;
+                                break;
                             }
-                            // No debería ser nulo
-                            if (USDT == null) {
-                                Vesta.info("No hay USDT ignorando el arbitraje");
-                                return;
-                            }
-                            int index = opportunity.getEdges().indexOf(USDT);
-                            List<TriangularArbitrage.ArbitrageEdge> rotatedEdges = new ArrayList<>(opportunity.getEdges());
-                            if (index != -1) {
-                                Collections.rotate(rotatedEdges, -index);
-                            }
-                            List<String> rotatedAssets = new ArrayList<>(rotatedEdges.size() + 1);
-                            if (!rotatedEdges.isEmpty()) {
-                                rotatedAssets.add(rotatedEdges.getFirst().fromAsset().asset);
-                                for (TriangularArbitrage.ArbitrageEdge edge : rotatedEdges) {
-                                    rotatedAssets.add(edge.toAsset().asset);
-                                }
-                            }
-                            this.opportunity = new TriangularArbitrage.TriangularArbitrageOpportunity(
-                                    List.copyOf(rotatedAssets),
-                                    List.copyOf(rotatedEdges),
-                                    opportunity.getLifeTime(),
-                                    opportunity.getRateProduct(),
-                                    opportunity.getProfitPercent(),
-                                    opportunity.getTotalWeight()
-                            );
-                            break;
                         }
+                        // No debería ser nulo
+                        if (USDT == null) {
+                            Vesta.info("No hay USDT ignorando el arbitraje");
+                            return;
+                        }
+                        int index = opportunity.getEdges().indexOf(USDT);
+                        List<TriangularArbitrage.ArbitrageEdge> rotatedEdges = new ArrayList<>(opportunity.getEdges());
+                        if (index != -1) {
+                            Collections.rotate(rotatedEdges, -index);
+                        }
+                        List<String> rotatedAssets = new ArrayList<>(rotatedEdges.size() + 1);
+                        if (!rotatedEdges.isEmpty()) {
+                            rotatedAssets.add(rotatedEdges.getFirst().fromAsset().asset);
+                            for (TriangularArbitrage.ArbitrageEdge edge : rotatedEdges) {
+                                rotatedAssets.add(edge.toAsset().asset);
+                            }
+                        }
+                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(250));
+//                        this.opportunity = new TriangularArbitrage.TriangularArbitrageOpportunity(
+//                                List.copyOf(rotatedAssets),
+//                                List.copyOf(rotatedEdges),
+//                                opportunity.getLifeTime(),
+//                                opportunity.getRateProduct(),
+//                                opportunity.getProfitPercent(),
+//                                opportunity.getTotalWeight()
+//                        );
+                        break;
                     }
                 }, 200, TimeUnit.MILLISECONDS);
             }
@@ -309,6 +314,9 @@ public class Arbitration extends BaseCommand implements Flags {
                                             "\u001B[32mGanado: " + " +" +decimalFormat.format(balance-TriangularArbitrage.DEFAULT_START_AMOUNT) :
                                             "\u001B[31mPerdido: " + " " + decimalFormat.format(balance-TriangularArbitrage.DEFAULT_START_AMOUNT)) +
                                             " USDT\u001B[0m");
+                                }
+                                if (balance < TriangularArbitrage.DEFAULT_START_AMOUNT){
+                                    opportunity = null;
                                 }
 
                                 if (edge.toAsset().asset.equals("BNB")) {
