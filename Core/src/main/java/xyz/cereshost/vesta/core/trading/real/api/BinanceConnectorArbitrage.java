@@ -358,17 +358,14 @@ public final class BinanceConnectorArbitrage implements AutoCloseable {
         );
     }
 
-    @SneakyThrows
+    @SuppressWarnings("DataFlowIssue")
     private @NotNull BookTicker toBookTicker(@NotNull BookTickerResponse ticker) {
-        String json = ticker.toJson();
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(json);
         return new BookTicker(
-                root.get("s").asText(),
-                root.get("b").asDouble(),
-                root.get("B").asDouble(),
-                root.get("a").asDouble(),
-                root.get("A").asDouble()
+                ticker.getsLowerCase(),
+                Double.valueOf(ticker.getbLowerCase()),
+                Double.valueOf(ticker.getB()),
+                Double.valueOf(ticker.getaLowerCase()),
+                Double.valueOf(ticker.getA())
         );
     }
 

@@ -35,6 +35,10 @@ public class ExpiredReference<T> {
         }
     }
 
+    public long getDelta() {
+        return System.nanoTime() - nanoTime;
+    }
+
     public T get() {
         return reference;
     }

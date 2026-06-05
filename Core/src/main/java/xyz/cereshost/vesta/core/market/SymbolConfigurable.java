@@ -6,6 +6,7 @@ import org.jetbrains.annotations.Nullable;
 import xyz.cereshost.vesta.core.trading.real.api.BinanceApi;
 
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -85,6 +86,10 @@ public class SymbolConfigurable implements Symbol{
     @Override
     public @NotNull Optional<Double> getStepSize() {
         return Optional.ofNullable(stepSize);
+    }
+
+    public Double getStepSizeRaw(){
+        return stepSize == null ? 0.0 : stepSize;
     }
 
     private boolean isConfigured = false;
