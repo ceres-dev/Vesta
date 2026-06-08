@@ -9,19 +9,9 @@
 </p>
 
 ## Descripción
-Programa de trading automático con api para **Binance**, Actualmente está
-en una fase **experimental** y no se recomienda bajo ninguna circunstancia
-no usarlo en trading real
+Programa de trading automático con api para **Binance**.
 
-## Características/Objetivos
-- [X] BackTest (Falta implementer la apertura de limites)
-- [ ] Api De Desarrollo de estrategias de trading
-  - [X] Control de posiciones de contratos de futuros perpetuos
-  - [ ] Control posiciones Spot
-  - [ ] Operar en multiples mercados
-  - [X] ApiRest de Binance
-  - [ ] ApiWebSocket de Binance
-  - [X] Gestion de riesgo (Limites TakeProfit y StopLoss) 
-  - [X] Gestion de indicadores Tecnicos 
-- [ ] Modelo Machine Learning de uso practico
-- [ ] DashBord
+Es para experimenter estrategias y técnicas del trading automático
+bajo ninguna circunstancia usar en el trading real hasta que se determina que
+estrategia y/o técnica va a usar, hasta entoses esto solo para
+experimentar
